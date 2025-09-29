@@ -53,7 +53,7 @@ def get_active_sink():
                     'muted': sink.mute == 1
                 }
     except Exception as e:
-        print(f"Error getting active sink: {e}")
+        print(f"ERROR getting active sink: {type(e).__name__}: {str(e)}")
     finally:
         pulse.close()
     return None
@@ -200,18 +200,24 @@ async def set_volume(volume_update: VolumeUpdate):
     """Set volume for active device"""
     pulse = get_pulse()
     if not pulse:
+        print("ERROR: Cannot connect to PulseAudio")
         raise HTTPException(status_code=500, detail="Cannot connect to PulseAudio")
 
     try:
         server_info = pulse.server_info()
         default_sink_name = server_info.default_sink_name
+        print(f"Setting volume to {volume_update.volume}% for sink: {default_sink_name}")
 
         # Volume in pulsectl is 0.0 to 1.0 (or higher for boost)
         volume_val = volume_update.volume / 100.0
         pulse.volume_set_all_chans(default_sink_name, volume_val)
 
+        print(f"Volume set successfully")
         return JSONResponse(content={"status": "ok", "volume": volume_update.volume})
     except Exception as e:
+        print(f"ERROR setting volume: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         pulse.close()
