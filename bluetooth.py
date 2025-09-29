@@ -46,20 +46,16 @@ async def scan_for_devices(duration=15):
         scan_proc.terminate()
 
         devices = []
-        seen_macs = set()
         for line in result.stdout.split('\n'):
             line = line.strip()
             if line:
                 match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
                 if match:
                     mac, name = match.groups()
-                    mac = mac.upper()
-                    if mac not in seen_macs:
-                        seen_macs.add(mac)
-                        devices.append({
-                            'mac': mac,
-                            'name': name.strip()
-                        })
+                    devices.append({
+                        'mac': mac,
+                        'name': name.strip()
+                    })
         return devices
     except Exception as e:
         return []
