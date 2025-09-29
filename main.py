@@ -122,8 +122,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
-    run(
+    uvicorn.run(app, host="0.0.0.0", port=8080)run(
         ['bluetoothctl', 'pair', device.mac],
         capture_output=True,
         text=True,
@@ -166,14 +165,14 @@ if __name__ == "__main__":
     else:
         return JSONResponse(content={"status": "partial", "message": "Paired but connection failed"})
 except subprocess.TimeoutExpired as e:
-print(f"ERROR: Bluetooth operation timeout: {e}")
-raise HTTPException(status_code=500, detail="Operation timeout")
+    print(f"ERROR: Bluetooth operation timeout: {e}")
+    raise HTTPException(status_code=500, detail="Operation timeout")
 except Exception as e:
-print(f"ERROR during Bluetooth pairing: {type(e).__name__}: {str(e)}")
-import traceback
+    print(f"ERROR during Bluetooth pairing: {type(e).__name__}: {str(e)}")
+    import traceback
 
-traceback.print_exc()
-raise HTTPException(status_code=500, detail=str(e))
+    traceback.print_exc()
+    raise HTTPException(status_code=500, detail=str(e))
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
