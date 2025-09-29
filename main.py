@@ -293,16 +293,24 @@ async def connect_bluetooth(device: BluetoothDevice):
 async def scan_bluetooth():
     """Scan for nearby Bluetooth devices"""
     try:
-        # Start scanning
-        subprocess.run(['bluetoothctl', 'scan', 'on'], timeout=1)
+        print("Starting Bluetooth scan...")
+        # Start scanning (run in background)
+        scan_proc = subprocess.Popen(
+            ['bluetoothctl', 'scan', 'on'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
 
         # Wait for devices to appear
+        print("Waiting 10 seconds for devices to appear...")
         await asyncio.sleep(10)
 
         # Stop scanning
-        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=1)
+        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=2)
+        scan_proc.terminate()
 
-        # Get discovered devices
+        print("Getting list of discovered devices...")
+        # Get discovered devices (both paired and unpaired)
         result = subprocess.run(
             ['bluetoothctl', 'devices'],
             capture_output=True,
@@ -310,19 +318,30 @@ async def scan_bluetooth():
             timeout=5
         )
 
+        print(f"Raw output:\n{result.stdout}")
+
         devices = []
+        seen_macs = set()
         for line in result.stdout.split('\n'):
             if line.strip():
-                match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line)
+                match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
                 if match:
                     mac, name = match.groups()
-                    devices.append({
-                        'mac': mac,
-                        'name': name
-                    })
+                    mac = mac.upper()
+                    if mac not in seen_macs:
+                        seen_macs.add(mac)
+                        devices.append({
+                            'mac': mac,
+                            'name': name.strip()
+                        })
+                        print(f"Found device: {name} ({mac})")
 
+        print(f"Total devices found: {len(devices)}")
         return JSONResponse(content={"devices": devices})
     except Exception as e:
+        print(f"ERROR during Bluetooth scan: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

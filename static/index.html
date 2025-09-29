@@ -341,6 +341,13 @@
         let currentDevices = [];
         let activeDevice = null;
 
+        // Helper function to escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         // Initialize
         async function init() {
             await refreshDevices();
@@ -534,18 +541,25 @@
 
                 resultsDiv.innerHTML = `
                     <div class="section-title" style="margin-top: 20px;">Found Devices</div>
-                    <div class="device-list">
-                        ${data.devices.map(device => `
-                            <div class="device-item" onclick='pairDevice("${device.mac}", "${device.name}")'>
-                                <div class="device-info">
-                                    <div>${device.name}</div>
-                                    <div style="font-size: 12px; color: #999;">${device.mac}</div>
-                                </div>
-                            </div>
-                        `).join('')}
+                    <div class="device-list" id="scanDeviceList">
                     </div>
                     <div id="pairingStatus"></div>
                 `;
+
+                // Add click handlers properly without inline onclick
+                const deviceListDiv = document.getElementById('scanDeviceList');
+                data.devices.forEach(device => {
+                    const deviceEl = document.createElement('div');
+                    deviceEl.className = 'device-item';
+                    deviceEl.innerHTML = `
+                        <div class="device-info">
+                            <div>${escapeHtml(device.name)}</div>
+                            <div style="font-size: 12px; color: #999;">${escapeHtml(device.mac)}</div>
+                        </div>
+                    `;
+                    deviceEl.addEventListener('click', () => pairDevice(device.mac, device.name));
+                    deviceListDiv.appendChild(deviceEl);
+                });
             } catch (error) {
                 resultsDiv.innerHTML = `<div class="error-message">Scan failed: ${error.message}</div>`;
             }
