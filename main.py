@@ -208,9 +208,20 @@ async def set_volume(volume_update: VolumeUpdate):
         default_sink_name = server_info.default_sink_name
         print(f"Setting volume to {volume_update.volume}% for sink: {default_sink_name}")
 
+        # Get the actual sink object
+        sinks = pulse.sink_list()
+        target_sink = None
+        for sink in sinks:
+            if sink.name == default_sink_name:
+                target_sink = sink
+                break
+
+        if not target_sink:
+            raise HTTPException(status_code=404, detail="Active sink not found")
+
         # Volume in pulsectl is 0.0 to 1.0 (or higher for boost)
         volume_val = volume_update.volume / 100.0
-        pulse.volume_set_all_chans(default_sink_name, volume_val)
+        pulse.volume_set_all_chans(target_sink, volume_val)
 
         print(f"Volume set successfully")
         return JSONResponse(content={"status": "ok", "volume": volume_update.volume})
@@ -228,9 +239,11 @@ async def select_device(selection: DeviceSelection):
     """Set a device as the default audio sink"""
     pulse = get_pulse()
     if not pulse:
+        print("ERROR: Cannot connect to PulseAudio")
         raise HTTPException(status_code=500, detail="Cannot connect to PulseAudio")
 
     try:
+        print(f"Selecting device: {selection.device_name}")
         pulse.sink_default_set(selection.device_name)
 
         # Move all existing streams to the new sink
@@ -238,11 +251,16 @@ async def select_device(selection: DeviceSelection):
         for sink_input in sink_inputs:
             try:
                 pulse.sink_input_move(sink_input.index, selection.device_name)
-            except:
-                pass  # Some streams might not be movable
+                print(f"Moved stream {sink_input.index} to {selection.device_name}")
+            except Exception as e:
+                print(f"Could not move stream {sink_input.index}: {e}")
 
+        print(f"Device selected successfully")
         return JSONResponse(content={"status": "ok"})
     except Exception as e:
+        print(f"ERROR selecting device: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         pulse.close()
