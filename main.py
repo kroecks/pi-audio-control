@@ -295,12 +295,9 @@ async def scan_bluetooth():
     try:
         print("Starting Bluetooth scan...")
 
-        # Clear any stale devices from cache (optional, but helps)
-        subprocess.run(['bluetoothctl', 'remove', '*'], capture_output=True, timeout=2)
-
         # Start scanning and capture output
         scan_proc = subprocess.Popen(
-            ['bluetoothctl', '--', 'scan', 'on'],
+            ['bluetoothctl', 'scan', 'on'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -312,29 +309,35 @@ async def scan_bluetooth():
         # Read scan output for 12 seconds
         print("Scanning for 12 seconds...")
         import time
+        import select
         start_time = time.time()
 
         while time.time() - start_time < 12:
+            # Check if there's data to read (non-blocking)
             if scan_proc.stdout:
-                line = scan_proc.stdout.readline()
-                if line:
-                    # Look for "[NEW]" or "[CHG]" device lines
-                    # Format: [NEW] Device XX:XX:XX:XX:XX:XX Device Name
-                    if '[NEW] Device' in line or '[CHG] Device' in line:
-                        match = re.search(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
-                        if match:
-                            mac, name = match.groups()
-                            mac = mac.upper()
-                            name = name.strip()
-                            if mac not in discovered_devices:
-                                discovered_devices[mac] = name
-                                print(f"Discovered: {name} ({mac})")
+                ready = select.select([scan_proc.stdout], [], [], 0.1)
+                if ready[0]:
+                    line = scan_proc.stdout.readline()
+                    if line:
+                        print(f"Scan output: {line.strip()}")
+                        # Look for "[NEW]" or "[CHG]" device lines
+                        # Format: [NEW] Device XX:XX:XX:XX:XX:XX Device Name
+                        if '[NEW] Device' in line or '[CHG] Device' in line:
+                            match = re.search(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
+                            if match:
+                                mac, name = match.groups()
+                                mac = mac.upper()
+                                name = name.strip()
+                                if mac not in discovered_devices:
+                                    discovered_devices[mac] = name
+                                    print(f"Discovered: {name} ({mac})")
             await asyncio.sleep(0.1)
 
         # Stop scanning
         print("Stopping scan...")
-        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=2)
+        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=2, capture_output=True)
         scan_proc.terminate()
+        scan_proc.wait(timeout=2)
 
         # Convert to list
         devices = [{'mac': mac, 'name': name} for mac, name in discovered_devices.items()]
