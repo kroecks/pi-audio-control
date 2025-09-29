@@ -1,94 +1,66 @@
 import asyncio
 import subprocess
 import re
+import os
 
+BLUETOOTH_MAC_FILE = os.path.expanduser("~/.bluetooth_mac")
 
-async def connect_device(mac, name):
-    """Connect to a Bluetooth device"""
+def run_cmd(cmd, timeout=10):
+    """Run a shell command and return (stdout, stderr, rc)."""
     try:
-        result = subprocess.run(
-            ['bluetoothctl', 'connect', mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        if result.returncode == 0 or 'Connection successful' in result.stdout:
-            await asyncio.sleep(3)
-            return {"status": "ok", "message": "Connected successfully"}
-        else:
-            return {"status": "error", "message": f"Connection failed: {result.stderr}"}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return result.stdout.strip(), result.stderr.strip(), result.returncode
     except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "Connection timeout"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return "", "Timeout expired", 1
 
 
 async def scan_for_devices(duration=15):
-    """Scan for nearby Bluetooth devices"""
-    try:
-        scan_proc = subprocess.Popen(
-            ['bluetoothctl', 'scan', 'on'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+    """Scan for nearby Bluetooth devices and return a list of dicts {mac, name}."""
+    run_cmd(['bluetoothctl', 'power', 'on'])
+    scan_proc = subprocess.Popen(['bluetoothctl', 'scan', 'on'],
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
 
-        await asyncio.sleep(duration)
+    await asyncio.sleep(duration)
 
-        result = subprocess.run(
-            ['bluetoothctl', 'devices'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+    stdout, _, _ = run_cmd(['bluetoothctl', 'devices'], timeout=5)
+    run_cmd(['bluetoothctl', 'scan', 'off'], timeout=2)
+    scan_proc.terminate()
 
-        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=2, capture_output=True)
-        scan_proc.terminate()
-
-        devices = []
-        for line in result.stdout.split('\n'):
-            line = line.strip()
-            if line:
-                match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
-                if match:
-                    mac, name = match.groups()
-                    devices.append({
-                        'mac': mac,
-                        'name': name.strip()
-                    })
-        return devices
-    except Exception as e:
-        return []
+    devices = []
+    for line in stdout.splitlines():
+        match = re.match(r'Device\s+([0-9A-F:]{17})\s+(.+)', line, re.IGNORECASE)
+        if match:
+            mac, name = match.groups()
+            devices.append({'mac': mac, 'name': name.strip()})
+    return devices
 
 
 async def pair_device(mac, name):
-    """Pair with a Bluetooth device"""
-    try:
-        pair_result = subprocess.run(
-            ['bluetoothctl', 'pair', mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+    """Pair, trust, and connect to a Bluetooth device."""
+    run_cmd(['bluetoothctl', 'power', 'on'])
 
-        if pair_result.returncode != 0 and 'AlreadyExists' not in pair_result.stderr:
-            return {"status": "error", "message": f"Pairing failed: {pair_result.stderr}"}
+    out, err, rc = run_cmd(['bluetoothctl', 'pair', mac], timeout=30)
+    if rc != 0 and "AlreadyExists" not in err:
+        return {"status": "error", "message": f"Pairing failed: {err}"}
 
-        subprocess.run(['bluetoothctl', 'trust', mac], capture_output=True, text=True, timeout=5)
+    run_cmd(['bluetoothctl', 'trust', mac], timeout=5)
 
-        connect_result = subprocess.run(
-            ['bluetoothctl', 'connect', mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+    out, _, rc = run_cmd(['bluetoothctl', 'connect', mac], timeout=30)
+    if rc == 0 or "Connection successful" in out:
+        with open(BLUETOOTH_MAC_FILE, "w") as f:
+            f.write(mac + "\n")
+        return {"status": "ok", "message": f"Paired and connected to {mac}"}
+    else:
+        return {"status": "partial", "message": "Paired but connection failed"}
 
-        if connect_result.returncode == 0 or 'Connection successful' in connect_result.stdout:
-            await asyncio.sleep(3)
-            return {"status": "ok", "message": "Paired and connected successfully"}
-        else:
-            return {"status": "partial", "message": "Paired but connection failed"}
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "Operation timeout"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+
+async def connect_device(mac, name):
+    """Connect to an already paired device."""
+    run_cmd(['bluetoothctl', 'power', 'on'])
+
+    out, _, rc = run_cmd(['bluetoothctl', 'connect', mac], timeout=30)
+    if rc == 0 or "Connection successful" in out:
+        return {"status": "ok", "message": f"Connected to {mac}"}
+    else:
+        return {"status": "error", "message": f"Failed to connect to {mac}"}
