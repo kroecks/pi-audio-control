@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  audio-control:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # PulseAudio socket
+      - /run/user/1000/pulse:/run/user/1000/pulse:rw
+      # D-Bus for Bluetooth
+      - /var/run/dbus:/var/run/dbus:ro
+    devices:
+      # Bluetooth device access
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      - PULSE_SERVER=unix:/run/user/1000/pulse/native
+      - PULSE_RUNTIME_PATH=/run/user/1000/pulse
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
+    network_mode: host
+    restart: unless-stopped
+    privileged: true
