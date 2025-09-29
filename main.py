@@ -1,17 +1,17 @@
-import os
-import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
-import pulsectl
-from typing import List, Optional
-import subprocess
-import re
+import asyncio
+
+# Import our modules
+import audio
+import bluetooth
 
 app = FastAPI()
 
 
+# Request models
 class VolumeUpdate(BaseModel):
     volume: float
 
@@ -25,147 +25,6 @@ class BluetoothDevice(BaseModel):
     name: str
 
 
-# PulseAudio helper functions
-def get_pulse():
-    """Get PulseAudio connection"""
-    try:
-        return pulsectl.Pulse('audio-control')
-    except Exception as e:
-        print(f"PulseAudio connection error: {e}")
-        return None
-
-
-def get_active_sink():
-    """Get the currently active audio sink"""
-    pulse = get_pulse()
-    if not pulse:
-        return None
-    try:
-        server_info = pulse.server_info()
-        default_sink_name = server_info.default_sink_name
-        sinks = pulse.sink_list()
-        for sink in sinks:
-            if sink.name == default_sink_name:
-                return {
-                    'name': sink.name,
-                    'description': sink.description,
-                    'volume': round(sink.volume.value_flat * 100),
-                    'muted': sink.mute == 1
-                }
-    except Exception as e:
-        print(f"ERROR getting active sink: {type(e).__name__}: {str(e)}")
-    finally:
-        pulse.close()
-    return None
-
-
-def get_all_sinks():
-    """Get all available audio sinks"""
-    pulse = get_pulse()
-    if not pulse:
-        return []
-
-    try:
-        server_info = pulse.server_info()
-        default_sink_name = server_info.default_sink_name
-        sinks = pulse.sink_list()
-
-        result = []
-        for sink in sinks:
-            is_bluetooth = 'bluez' in sink.name.lower()
-            is_active = sink.name == default_sink_name
-
-            device_info = {
-                'name': sink.name,
-                'description': sink.description,
-                'volume': round(sink.volume.value_flat * 100),
-                'muted': sink.mute == 1,
-                'is_active': is_active,
-                'is_bluetooth': is_bluetooth,
-                'state': 'connected'
-            }
-            result.append(device_info)
-
-        return result
-    except Exception as e:
-        print(f"Error getting sinks: {e}")
-        return []
-    finally:
-        pulse.close()
-
-
-def get_paired_bluetooth_devices():
-    """Get all paired Bluetooth devices"""
-    try:
-        result = subprocess.run(
-            ['bluetoothctl', 'devices', 'Paired'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-
-        devices = []
-        for line in result.stdout.split('\n'):
-            if line.strip():
-                match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line)
-                if match:
-                    mac, name = match.groups()
-                    # Check if connected
-                    info_result = subprocess.run(
-                        ['bluetoothctl', 'info', mac],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    is_connected = 'Connected: yes' in info_result.stdout
-
-                    devices.append({
-                        'mac': mac,
-                        'name': name,
-                        'connected': is_connected
-                    })
-
-        return devices
-    except Exception as e:
-        print(f"Error getting Bluetooth devices: {e}")
-        return []
-
-
-def merge_audio_devices():
-    """Merge PulseAudio sinks with Bluetooth device info"""
-    sinks = get_all_sinks()
-    bt_devices = get_paired_bluetooth_devices()
-
-    # Create a map of Bluetooth MACs that have audio sinks
-    bt_with_sinks = set()
-    for sink in sinks:
-        if sink['is_bluetooth']:
-            # Try to extract MAC from sink name
-            mac_match = re.search(
-                r'([0-9A-F]{2}[_:][0-9A-F]{2}[_:][0-9A-F]{2}[_:][0-9A-F]{2}[_:][0-9A-F]{2}[_:][0-9A-F]{2})',
-                sink['name'], re.IGNORECASE)
-            if mac_match:
-                mac = mac_match.group(1).replace('_', ':').upper()
-                bt_with_sinks.add(mac)
-
-    # Add Bluetooth devices that are paired but don't have active sinks
-    all_devices = list(sinks)
-    for bt_dev in bt_devices:
-        if bt_dev['mac'] not in bt_with_sinks:
-            all_devices.append({
-                'name': f"bt_{bt_dev['mac'].replace(':', '_')}",
-                'description': bt_dev['name'],
-                'volume': 0,
-                'muted': False,
-                'is_active': False,
-                'is_bluetooth': True,
-                'state': 'connected' if bt_dev['connected'] else 'offline',
-                'mac': bt_dev['mac']
-            })
-
-    return all_devices
-
-
 @app.get("/")
 async def root():
     """Serve the main HTML page"""
@@ -177,7 +36,7 @@ async def root():
 async def get_devices():
     """Get all audio devices"""
     try:
-        devices = merge_audio_devices()
+        devices = audio.merge_audio_devices()
         return JSONResponse(content={"devices": devices})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -187,7 +46,7 @@ async def get_devices():
 async def get_active_device():
     """Get the currently active device"""
     try:
-        active = get_active_sink()
+        active = audio.get_active_sink()
         if not active:
             raise HTTPException(status_code=404, detail="No active device found")
         return JSONResponse(content=active)
@@ -198,93 +57,38 @@ async def get_active_device():
 @app.post("/api/volume")
 async def set_volume(volume_update: VolumeUpdate):
     """Set volume for active device"""
-    pulse = get_pulse()
-    if not pulse:
-        print("ERROR: Cannot connect to PulseAudio")
-        raise HTTPException(status_code=500, detail="Cannot connect to PulseAudio")
-
     try:
-        server_info = pulse.server_info()
-        default_sink_name = server_info.default_sink_name
-        print(f"Setting volume to {volume_update.volume}% for sink: {default_sink_name}")
-
-        # Get the actual sink object
-        sinks = pulse.sink_list()
-        target_sink = None
-        for sink in sinks:
-            if sink.name == default_sink_name:
-                target_sink = sink
-                break
-
-        if not target_sink:
-            raise HTTPException(status_code=404, detail="Active sink not found")
-
-        # Volume in pulsectl is 0.0 to 1.0 (or higher for boost)
-        volume_val = volume_update.volume / 100.0
-        pulse.volume_set_all_chans(target_sink, volume_val)
-
-        print(f"Volume set successfully")
-        return JSONResponse(content={"status": "ok", "volume": volume_update.volume})
+        success = audio.set_volume(volume_update.volume)
+        if success:
+            return JSONResponse(content={"status": "ok", "volume": volume_update.volume})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to set volume")
     except Exception as e:
-        print(f"ERROR setting volume: {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        pulse.close()
 
 
 @app.post("/api/device/select")
 async def select_device(selection: DeviceSelection):
     """Set a device as the default audio sink"""
-    pulse = get_pulse()
-    if not pulse:
-        print("ERROR: Cannot connect to PulseAudio")
-        raise HTTPException(status_code=500, detail="Cannot connect to PulseAudio")
-
     try:
-        print(f"Selecting device: {selection.device_name}")
-        pulse.sink_default_set(selection.device_name)
-
-        # Move all existing streams to the new sink
-        sink_inputs = pulse.sink_input_list()
-        for sink_input in sink_inputs:
-            try:
-                pulse.sink_input_move(sink_input.index, selection.device_name)
-                print(f"Moved stream {sink_input.index} to {selection.device_name}")
-            except Exception as e:
-                print(f"Could not move stream {sink_input.index}: {e}")
-
-        print(f"Device selected successfully")
-        return JSONResponse(content={"status": "ok"})
+        success = audio.select_device(selection.device_name)
+        if success:
+            return JSONResponse(content={"status": "ok"})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to select device")
     except Exception as e:
-        print(f"ERROR selecting device: {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        pulse.close()
 
 
 @app.post("/api/bluetooth/connect")
 async def connect_bluetooth(device: BluetoothDevice):
     """Connect to a Bluetooth device"""
     try:
-        result = subprocess.run(
-            ['bluetoothctl', 'connect', device.mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        if result.returncode == 0 or 'Connection successful' in result.stdout:
-            # Wait a bit for audio sink to appear
-            await asyncio.sleep(3)
-            return JSONResponse(content={"status": "ok", "message": "Connected successfully"})
+        result = await bluetooth.connect_device(device.mac, device.name)
+        if result["status"] == "ok":
+            return JSONResponse(content=result)
         else:
-            raise HTTPException(status_code=500, detail=f"Connection failed: {result.stderr}")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Connection timeout")
+            raise HTTPException(status_code=500, detail=result["message"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -293,62 +97,9 @@ async def connect_bluetooth(device: BluetoothDevice):
 async def scan_bluetooth():
     """Scan for nearby Bluetooth devices"""
     try:
-        print("Starting Bluetooth scan...")
-
-        # Start scanning in background
-        scan_proc = subprocess.Popen(
-            ['bluetoothctl', 'scan', 'on'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-
-        # Wait for devices to be discovered
-        print("Waiting 15 seconds for device discovery...")
-        await asyncio.sleep(15)
-
-        # Get the list of devices
-        print("Getting device list...")
-        result = subprocess.run(
-            ['bluetoothctl', 'devices'],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-
-        print(f"Device list output:\n{result.stdout}")
-
-        # Stop scanning
-        print("Stopping scan...")
-        subprocess.run(['bluetoothctl', 'scan', 'off'], timeout=2, capture_output=True)
-        scan_proc.terminate()
-
-        # Parse devices
-        devices = []
-        seen_macs = set()
-
-        for line in result.stdout.split('\n'):
-            line = line.strip()
-            if line:
-                # Format: Device XX:XX:XX:XX:XX:XX Device Name
-                match = re.match(r'Device\s+([0-9A-F:]+)\s+(.+)', line, re.IGNORECASE)
-                if match:
-                    mac, name = match.groups()
-                    mac = mac.upper()
-                    if mac not in seen_macs:
-                        seen_macs.add(mac)
-                        devices.append({
-                            'mac': mac,
-                            'name': name.strip()
-                        })
-                        print(f"Found: {name.strip()} ({mac})")
-
-        print(f"Total unique devices found: {len(devices)}")
+        devices = await bluetooth.scan_for_devices(duration=15)
         return JSONResponse(content={"devices": devices})
-
     except Exception as e:
-        print(f"ERROR during Bluetooth scan: {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -356,61 +107,73 @@ async def scan_bluetooth():
 async def pair_bluetooth(device: BluetoothDevice):
     """Pair with a Bluetooth device"""
     try:
-        print(f"Attempting to pair with {device.name} ({device.mac})")
-
-        # Pair
-        print("Running bluetoothctl pair command...")
-        pair_result = subprocess.run(
-            ['bluetoothctl', 'pair', device.mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        print(f"Pair result - returncode: {pair_result.returncode}")
-        print(f"Pair stdout: {pair_result.stdout}")
-        print(f"Pair stderr: {pair_result.stderr}")
-
-        if pair_result.returncode != 0 and 'AlreadyExists' not in pair_result.stderr:
-            raise HTTPException(status_code=500, detail=f"Pairing failed: {pair_result.stderr}")
-
-        # Trust
-        print("Running bluetoothctl trust command...")
-        trust_result = subprocess.run(
-            ['bluetoothctl', 'trust', device.mac],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        print(f"Trust result - returncode: {trust_result.returncode}")
-
-        # Connect
-        print("Running bluetoothctl connect command...")
-        connect_result = subprocess.run(
-            ['bluetoothctl', 'connect', device.mac],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-
-        print(f"Connect result - returncode: {connect_result.returncode}")
-        print(f"Connect stdout: {connect_result.stdout}")
-        print(f"Connect stderr: {connect_result.stderr}")
-
-        if connect_result.returncode == 0 or 'Connection successful' in connect_result.stdout:
-            await asyncio.sleep(3)
-            return JSONResponse(content={"status": "ok", "message": "Paired and connected successfully"})
+        result = await bluetooth.pair_device(device.mac, device.name)
+        if result["status"] == "ok":
+            return JSONResponse(content=result)
         else:
-            return JSONResponse(content={"status": "partial", "message": "Paired but connection failed"})
-    except subprocess.TimeoutExpired as e:
-        print(f"ERROR: Bluetooth operation timeout: {e}")
-        raise HTTPException(status_code=500, detail="Operation timeout")
+            raise HTTPException(status_code=500, detail=result["message"])
     except Exception as e:
-        print(f"ERROR during Bluetooth pairing: {type(e).__name__}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8080)
+    run(
+        ['bluetoothctl', 'pair', device.mac],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+
+    print(f"Pair result - returncode: {pair_result.returncode}")
+    print(f"Pair stdout: {pair_result.stdout}")
+    print(f"Pair stderr: {pair_result.stderr}")
+
+    if pair_result.returncode != 0 and 'AlreadyExists' not in pair_result.stderr:
+        raise HTTPException(status_code=500, detail=f"Pairing failed: {pair_result.stderr}")
+
+    # Trust
+    print("Running bluetoothctl trust command...")
+    trust_result = subprocess.run(
+        ['bluetoothctl', 'trust', device.mac],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+    print(f"Trust result - returncode: {trust_result.returncode}")
+
+    # Connect
+    print("Running bluetoothctl connect command...")
+    connect_result = subprocess.run(
+        ['bluetoothctl', 'connect', device.mac],
+        capture_output=True,
+        text=True,
+        timeout=30
+    )
+
+    print(f"Connect result - returncode: {connect_result.returncode}")
+    print(f"Connect stdout: {connect_result.stdout}")
+    print(f"Connect stderr: {connect_result.stderr}")
+
+    if connect_result.returncode == 0 or 'Connection successful' in connect_result.stdout:
+        await asyncio.sleep(3)
+        return JSONResponse(content={"status": "ok", "message": "Paired and connected successfully"})
+    else:
+        return JSONResponse(content={"status": "partial", "message": "Paired but connection failed"})
+except subprocess.TimeoutExpired as e:
+print(f"ERROR: Bluetooth operation timeout: {e}")
+raise HTTPException(status_code=500, detail="Operation timeout")
+except Exception as e:
+print(f"ERROR during Bluetooth pairing: {type(e).__name__}: {str(e)}")
+import traceback
+
+traceback.print_exc()
+raise HTTPException(status_code=500, detail=str(e))
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
