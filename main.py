@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import asyncio
+import subprocess
 
 # Import our modules
 import audio
@@ -105,31 +106,15 @@ async def scan_bluetooth():
 
 @app.post("/api/bluetooth/pair")
 async def pair_bluetooth(device: BluetoothDevice):
-    """Pair with a Bluetooth device"""
+    """Pair with a Bluetooth device using bluetoothctl"""
     try:
-        result = await bluetooth.pair_device(device.mac, device.name)
-        if result["status"] == "ok":
-            return JSONResponse(content=result)
-        else:
-            raise HTTPException(status_code=500, detail=result["message"])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8080)
-    run(
-        ['bluetoothctl', 'pair', device.mac],
-        capture_output=True,
-        text=True,
-        timeout=30
+        # Pair
+        pair_result = subprocess.run(
+            ['bluetoothctl', 'pair', device.mac],
+            capture_output=True,
+            text=True,
+            timeout=30
         )
-
         print(f"Pair result - returncode: {pair_result.returncode}")
         print(f"Pair stdout: {pair_result.stdout}")
         print(f"Pair stderr: {pair_result.stderr}")
@@ -138,7 +123,6 @@ if __name__ == "__main__":
             raise HTTPException(status_code=500, detail=f"Pairing failed: {pair_result.stderr}")
 
         # Trust
-        print("Running bluetoothctl trust command...")
         trust_result = subprocess.run(
             ['bluetoothctl', 'trust', device.mac],
             capture_output=True,
@@ -148,14 +132,12 @@ if __name__ == "__main__":
         print(f"Trust result - returncode: {trust_result.returncode}")
 
         # Connect
-        print("Running bluetoothctl connect command...")
         connect_result = subprocess.run(
             ['bluetoothctl', 'connect', device.mac],
             capture_output=True,
             text=True,
             timeout=30
         )
-
         print(f"Connect result - returncode: {connect_result.returncode}")
         print(f"Connect stdout: {connect_result.stdout}")
         print(f"Connect stderr: {connect_result.stderr}")
@@ -165,20 +147,20 @@ if __name__ == "__main__":
             return JSONResponse(content={"status": "ok", "message": "Paired and connected successfully"})
         else:
             return JSONResponse(content={"status": "partial", "message": "Paired but connection failed"})
+
     except subprocess.TimeoutExpired as e:
         print(f"ERROR: Bluetooth operation timeout: {e}")
         raise HTTPException(status_code=500, detail="Operation timeout")
     except Exception as e:
         print(f"ERROR during Bluetooth pairing: {type(e).__name__}: {str(e)}")
         import traceback
-
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8080)
